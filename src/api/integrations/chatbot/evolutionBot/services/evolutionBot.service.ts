@@ -417,11 +417,25 @@ export class EvolutionBotService {
       return;
     }
 
-    const message = await this.sendMessageToBot(instance, session, bot, remoteJid, pushName, content);
+    try {
+      const message = await this.sendMessageToBot(instance, session, bot, remoteJid, pushName, content);
 
-    if (!message) return;
+      if (!message) {
+        await this.prismaRepository.integrationSession.update({
+          where: { id: session.id },
+          data: { awaitUser: true },
+        });
+        return;
+      }
 
-    await this.sendMessageWhatsApp(instance, remoteJid, session, settings, message);
+      await this.sendMessageWhatsApp(instance, remoteJid, session, settings, message);
+    } catch (error) {
+      this.logger.error('Error processing bot message: ' + error?.message);
+      await this.prismaRepository.integrationSession.update({
+        where: { id: session.id },
+        data: { awaitUser: true },
+      });
+    }
 
     return;
   }

@@ -722,11 +722,16 @@ export class EvolutionBotController extends ChatbotController implements Chatbot
         },
       });
 
-      if (this.checkIgnoreJids(settings?.ignoreJids, remoteJid)) return;
+      if (this.checkIgnoreJids(settings?.ignoreJids, remoteJid)) {
+        this.logger.warn('EvolutionBot: ignoring JID ' + remoteJid);
+        return;
+      }
 
       const session = await this.getSession(remoteJid, instance);
 
       const content = getConversationMessage(msg);
+
+      this.logger.log('EvolutionBot emit: instance=' + instance.instanceName + ' remoteJid=' + remoteJid + ' content=' + (content?.substring(0, 50) || '(empty)') + ' session=' + (session?.id || 'none'));
 
       let findBot = (await this.findBotTrigger(this.botRepository, content, instance, session)) as EvolutionBot;
 
@@ -746,6 +751,7 @@ export class EvolutionBotController extends ChatbotController implements Chatbot
 
           findBot = findFallback;
         } else {
+          this.logger.warn('EvolutionBot: no bot found for instance ' + instance.instanceId);
           return;
         }
       }
@@ -782,6 +788,7 @@ export class EvolutionBotController extends ChatbotController implements Chatbot
       };
 
       if (stopBotFromMe && key.fromMe && session) {
+        this.logger.log('EvolutionBot: stopBotFromMe triggered, pausing session ' + session.id);
         await this.prismaRepository.integrationSession.update({
           where: {
             id: session.id,
@@ -794,10 +801,12 @@ export class EvolutionBotController extends ChatbotController implements Chatbot
       }
 
       if (!listeningFromMe && key.fromMe) {
+        this.logger.log('EvolutionBot: ignoring fromMe message');
         return;
       }
 
       if (session && !session.awaitUser) {
+        this.logger.warn('EvolutionBot: session ' + session.id + ' not awaiting user (awaitUser=false), skipping');
         return;
       }
 

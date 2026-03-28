@@ -11,7 +11,7 @@ WORKDIR /evolution
 
 COPY ./package.json ./tsconfig.json ./
 
-RUN npm install
+RUN npm install --legacy-peer-deps
 
 COPY ./src ./src
 COPY ./public ./public
@@ -27,7 +27,7 @@ RUN chmod +x ./Docker/scripts/* && dos2unix ./Docker/scripts/*
 
 RUN ./Docker/scripts/generate_database.sh
 
-RUN npm run build
+RUN npx tsup
 
 FROM node:20-alpine AS final
 
