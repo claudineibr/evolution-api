@@ -13,6 +13,7 @@ import {
   SendTemplateDto,
   SendTextDto,
 } from '@api/dto/sendMessage.dto';
+import { metaUnavailableStatus } from '@api/integrations/channel/meta/official-credentials';
 import * as s3Service from '@api/integrations/storage/s3/libs/minio.server';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
@@ -21,7 +22,12 @@ import { CacheService } from '@api/services/cache.service';
 import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, wa } from '@api/types/wa.types';
 import { AudioConverter, Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
-import { BadRequestException, InternalServerErrorException } from '@exceptions';
+import {
+  BadRequestException,
+  GatewayTimeoutException,
+  InternalServerErrorException,
+  ServiceUnavailableException,
+} from '@exceptions';
 import { createJid } from '@utils/createJid';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
@@ -77,6 +83,15 @@ export class BusinessStartupService extends ChannelStartupService {
   }
 
   private async post(message: any, params: string) {
+    if (params === 'messages') {
+      const instance = await this.prismaRepository.instance.findUnique({
+        where: { id: this.instanceId },
+        include: { metaApp: true },
+      });
+      if (!instance?.metaApp || instance.metaApp.deletedAt || instance.connectionStatus !== 'open') {
+        throw new BadRequestException('Vincule o aplicativo Meta e revalide as credenciais do número.');
+      }
+    }
     if (params === 'messages' && message.type !== 'template') {
       const remoteJid = createJid(String(message.to || ''));
       const stored = await this.prismaRepository.message.findFirst({
@@ -97,9 +112,13 @@ export class BusinessStartupService extends ChannelStartupService {
       const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
       urlServer = `${urlServer}/${version}/${this.number}/${params}`;
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` };
-      const result = await axios.post(urlServer, message, { headers });
+      const result = await axios.post(urlServer, message, { headers, timeout: 15000 });
       return result.data;
     } catch (e) {
+      const unavailable = metaUnavailableStatus(e);
+      if (unavailable === 504) throw new GatewayTimeoutException('A Meta não confirmou o envio.');
+      if (unavailable === 503)
+        throw new ServiceUnavailableException('A Meta está indisponível no momento. Tente novamente em alguns minutos.');
       throw new BadRequestException({ message: 'Meta rejected the message', code: e.response?.data?.error?.code });
     }
   }
@@ -173,12 +192,13 @@ export class BusinessStartupService extends ChannelStartupService {
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` };
 
       // Primeiro, obtenha a URL do arquivo
-      let result = await axios.get(urlServer, { headers });
+      let result = await axios.get(urlServer, { headers, timeout: 60000 });
 
       // Depois, baixe o arquivo usando a URL retornada
       result = await axios.get(result.data.url, {
         headers: { Authorization: `Bearer ${this.token}` }, // Use apenas o token de autorização para download
         responseType: 'arraybuffer',
+        timeout: 60000,
       });
 
       return result.data;
@@ -465,11 +485,12 @@ export class BusinessStartupService extends ChannelStartupService {
                 const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
                 urlServer = `${urlServer}/${version}/${id}`;
                 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` };
-                const result = await axios.get(urlServer, { headers });
+                const result = await axios.get(urlServer, { headers, timeout: 60000 });
 
                 const buffer = await axios.get(result.data.url, {
                   headers: { Authorization: `Bearer ${this.token}` }, // Use apenas o token de autorização para download
                   responseType: 'arraybuffer',
+                  timeout: 60000,
                 });
 
                 let mediaType;

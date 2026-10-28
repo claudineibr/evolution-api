@@ -1,8 +1,10 @@
 import { InstanceDto } from '@api/dto/instance.dto';
 import { TemplateDto } from '@api/dto/template.dto';
+import { metaUnavailableStatus } from '@api/integrations/channel/meta/official-credentials';
 import { PrismaRepository } from '@api/repository/repository.service';
 import { ConfigService, WaBusiness } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { GatewayTimeoutException, ServiceUnavailableException } from '@exceptions';
 import axios from 'axios';
 
 import { WAMonitoringService } from './monitor.service';
@@ -131,6 +133,13 @@ export class TemplateService {
     return response;
   }
 
+  private throwIfMetaUnavailable(error: any) {
+    const status = metaUnavailableStatus(error);
+    if (status === 504) throw new GatewayTimeoutException('A Meta não confirmou o envio.');
+    if (status === 503)
+      throw new ServiceUnavailableException('A Meta está indisponível no momento. Tente novamente em alguns minutos.');
+  }
+
   private throwMetaError(response: any, fallback: string): never {
     if (!response?.error) throw new Error(fallback);
     const metaError = new Error(response.error.message || 'WhatsApp API Error');
@@ -159,13 +168,14 @@ export class TemplateService {
         } while (after);
         return { data: templates };
       } else if (method === 'POST') {
-        const result = await axios.post(urlServer, data, { headers });
+        const result = await axios.post(urlServer, data, { headers, timeout: 15000 });
         return result.data;
       }
     } catch (e) {
       this.logger.error(
         'WhatsApp API request error: ' + (e.response?.data ? JSON.stringify(e.response?.data) : e.message),
       );
+      this.throwIfMetaUnavailable(e);
 
       // Return the complete error response from WhatsApp API
       if (e.response?.data) {
@@ -183,12 +193,13 @@ export class TemplateService {
       const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
       urlServer = `${urlServer}/${version}/${templateId}`;
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${credentials.token}` };
-      const result = await axios.post(urlServer, data, { headers });
+      const result = await axios.post(urlServer, data, { headers, timeout: 15000 });
       return result.data;
     } catch (e) {
       this.logger.error(
         'WhatsApp API request error: ' + (e.response?.data ? JSON.stringify(e.response?.data) : e.message),
       );
+      this.throwIfMetaUnavailable(e);
       if (e.response?.data) return e.response.data;
       throw new Error(`Connection error: ${e.message}`);
     }
@@ -203,12 +214,13 @@ export class TemplateService {
       const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
       urlServer = `${urlServer}/${version}/${credentials.businessId}/message_templates`;
       const headers = { Authorization: `Bearer ${credentials.token}` };
-      const result = await axios.delete(urlServer, { headers, params });
+      const result = await axios.delete(urlServer, { headers, params, timeout: 15000 });
       return result.data;
     } catch (e) {
       this.logger.error(
         'WhatsApp API request error: ' + (e.response?.data ? JSON.stringify(e.response?.data) : e.message),
       );
+      this.throwIfMetaUnavailable(e);
       if (e.response?.data) return e.response.data;
       throw new Error(`Connection error: ${e.message}`);
     }

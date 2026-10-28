@@ -7,7 +7,7 @@ import { CacheService } from '@api/services/cache.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { SettingsService } from '@api/services/settings.service';
 import { Events, Integration, wa } from '@api/types/wa.types';
-import { Auth, Chatwoot, ConfigService, HttpServer, WaBusiness } from '@config/env.config';
+import { Auth, Chatwoot, ConfigService, HttpServer } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import { BadRequestException, InternalServerErrorException, UnauthorizedException } from '@exceptions';
 import { delay } from 'baileys';
@@ -135,16 +135,10 @@ export class InstanceController {
 
       await this.settingsService.create(instanceDto, settings);
 
-      let webhookWaBusiness = null,
-        accessTokenWaBusiness = '';
-
       if (instanceData.integration === Integration.WHATSAPP_BUSINESS) {
         if (!instanceData.number) {
           throw new BadRequestException('number is required');
         }
-        const urlServer = this.configService.get<HttpServer>('SERVER').URL;
-        webhookWaBusiness = `${urlServer}/webhook/meta`;
-        accessTokenWaBusiness = this.configService.get<WaBusiness>('WA_BUSINESS').TOKEN_WEBHOOK;
       }
 
       if (!instanceData.chatwootAccountId || !instanceData.chatwootToken || !instanceData.chatwootUrl) {
@@ -161,8 +155,8 @@ export class InstanceController {
             instanceName: instance.instanceName,
             instanceId: instanceId,
             integration: instanceData.integration,
-            webhookWaBusiness,
-            accessTokenWaBusiness,
+            webhookWaBusiness: null,
+            accessTokenWaBusiness: '',
             status:
               typeof instance.connectionStatus === 'string'
                 ? instance.connectionStatus
@@ -255,8 +249,8 @@ export class InstanceController {
           instanceName: instance.instanceName,
           instanceId: instanceId,
           integration: instanceData.integration,
-          webhookWaBusiness,
-          accessTokenWaBusiness,
+          webhookWaBusiness: null,
+          accessTokenWaBusiness: '',
           status:
             typeof instance.connectionStatus === 'string'
               ? instance.connectionStatus

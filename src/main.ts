@@ -64,7 +64,7 @@ async function bootstrap() {
     json({
       limit: '136mb',
       verify: (req, _res, buffer) => {
-        if (req.url?.split('?')[0] === '/webhook/meta') req['rawBody'] = Buffer.from(buffer);
+        if (/^\/webhook\/meta(?:\/[\w-]+)?$/.test(req.url?.split('?')[0] || '')) req['rawBody'] = Buffer.from(buffer);
       },
     }),
     compression(),

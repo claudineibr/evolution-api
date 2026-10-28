@@ -51,3 +51,5 @@ lerna-debug.log*
 test/*
 !test/official-signature.test.ts
 !test/official-credentials.test.ts
+
+!test/official-meta-apps.test.ts

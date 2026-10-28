@@ -1,29 +1,34 @@
-import { PrismaRepository } from '@api/repository/repository.service';
-import { WAMonitoringService } from '@api/services/monitor.service';
+import type { PrismaRepository } from '@api/repository/repository.service';
+import type { WAMonitoringService } from '@api/services/monitor.service';
 import { Events } from '@api/types/wa.types';
 import { Logger } from '@config/logger.config';
 import { createJid } from '@utils/createJid';
 import { createHash } from 'crypto';
 
-import { ChannelController, ChannelControllerInterface } from '../channel.controller';
-
 const BATCH_SIZE = 25;
 const LEASE_MS = 300000;
 const MAX_ATTEMPTS = 288;
 
-export class MetaController extends ChannelController implements ChannelControllerInterface {
+export class MetaController {
   private readonly logger = new Logger('MetaController');
   private workerStarted = false;
   private draining = false;
-  integrationEnabled: boolean;
 
-  constructor(prismaRepository: PrismaRepository, waMonitor: WAMonitoringService) {
-    super(prismaRepository, waMonitor);
-  }
+  constructor(
+    public readonly prismaRepository: PrismaRepository,
+    public readonly waMonitor: WAMonitoringService,
+  ) {}
 
-  public async enqueueWebhook(payload: any) {
-    const id = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-    await this.prismaRepository.metaWebhookInbox.upsert({ where: { id }, create: { id, payload }, update: {} });
+  public async enqueueWebhook(payload: any, metaAppId: string) {
+    if (!metaAppId) throw new Error('Meta app required');
+    const id = createHash('sha256')
+      .update(metaAppId + ':' + JSON.stringify(payload))
+      .digest('hex');
+    await this.prismaRepository.metaWebhookInbox.upsert({
+      where: { id },
+      create: { id, payload, metaAppId },
+      update: {},
+    });
     return { status: 'success' };
   }
 
@@ -39,11 +44,11 @@ export class MetaController extends ChannelController implements ChannelControll
     if (this.draining) return;
     this.draining = true;
     try {
-      let rows: { id: string; payload: any; attempts: number }[];
+      let rows: { id: string; payload: any; attempts: number; metaAppId: string }[];
       do {
         const now = new Date();
         rows = await this.prismaRepository.metaWebhookInbox.findMany({
-          where: { completedAt: null, availableAt: { lte: now } },
+          where: { completedAt: null, availableAt: { lte: now }, metaAppId: { not: null } },
           orderBy: { availableAt: 'asc' },
           take: BATCH_SIZE,
         });
@@ -54,7 +59,7 @@ export class MetaController extends ChannelController implements ChannelControll
           });
           if (!claimed.count) continue;
           try {
-            await this.receiveWebhook(row.payload);
+            await this.receiveWebhook(row.payload, row.metaAppId);
             await this.prismaRepository.metaWebhookInbox.update({
               where: { id: row.id },
               data: { completedAt: new Date() },
@@ -84,16 +89,26 @@ export class MetaController extends ChannelController implements ChannelControll
     }
   }
 
-  public async receiveWebhook(data: any) {
+  public async receiveWebhook(data: any, metaAppId: string) {
+    if (!metaAppId) throw new Error('Meta app required');
     if (data.object !== 'whatsapp_business_account') return;
+    const app = await this.prismaRepository.metaApp.findFirst({ where: { id: metaAppId, deletedAt: null } });
+    if (!app) return;
     for (const entry of data.entry || []) {
       const wabaId = String(entry.id);
       for (const change of entry.changes || []) {
         const value = change.value || {};
         if (change.field === 'message_template_status_update') {
           const instances = await this.prismaRepository.instance.findMany({
-            where: { businessId: wabaId, integration: 'WHATSAPP-BUSINESS' },
+            where: {
+              businessId: wabaId,
+              metaAppId,
+              integration: 'WHATSAPP-BUSINESS',
+              connectionStatus: { not: 'close' },
+            },
           });
+          if (!instances.length)
+            this.logger.info(`Meta event ignored: app=${metaAppId} field=template_status reason=unregistered_waba`);
           for (const instance of instances) {
             const channel = this.waMonitor.waInstances[instance.name];
             if (!channel) throw new Error('Official instance not loaded');
@@ -105,6 +120,7 @@ export class MetaController extends ChannelController implements ChannelControll
         if (!numberId) continue;
         const instances = await this.prismaRepository.instance.findMany({
           where: {
+            metaAppId,
             number: String(numberId),
             businessId: wabaId,
             integration: 'WHATSAPP-BUSINESS',
@@ -112,6 +128,7 @@ export class MetaController extends ChannelController implements ChannelControll
           },
         });
         if (instances.length !== 1) {
+          if (!instances.length) this.logger.info(`Meta event ignored: app=${metaAppId} reason=unregistered_number`);
           if (instances.length > 1) {
             this.logger.error(`Meta event ignored: phone_number_id=${numberId} active_instances=${instances.length}`);
           }

@@ -23,13 +23,15 @@ export interface MetaErrorResponse {
  */
 export function createMetaErrorResponse(error: any, context: string): MetaErrorResponse {
   // Extract Meta/WhatsApp specific error fields
+  const unavailable = [HttpStatus.SERVICE_UNAVAILABLE, HttpStatus.GATEWAY_TIMEOUT].includes(error?.status);
   const metaError = error.template || error;
-  const errorUserTitle = metaError.error_user_title || metaError.message || 'Unknown error';
-  const errorUserMsg = metaError.error_user_msg || metaError.message || 'Unknown error';
+  const message = unavailable ? ([] as string[]).concat(error.message).join(' ') : metaError.message;
+  const errorUserTitle = metaError.error_user_title || message || 'Unknown error';
+  const errorUserMsg = metaError.error_user_msg || message || 'Unknown error';
 
   return {
-    status: HttpStatus.BAD_REQUEST,
-    error: 'Bad Request',
+    status: unavailable ? error.status : HttpStatus.BAD_REQUEST,
+    error: unavailable ? error.error : 'Bad Request',
     message: errorUserTitle,
     details: {
       whatsapp_error: errorUserMsg,

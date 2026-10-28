@@ -61,7 +61,27 @@ enum DifyBotType {
   workflow
 }
 
+model MetaApp {
+  id                 String    @id @db.VarChar(36)
+  companyId          String    @db.VarChar(36)
+  appId              String    @db.VarChar(50)
+  activeAppId        String?   @unique @db.VarChar(50)
+  publicId           String    @unique @db.VarChar(64)
+  appSecret          String    @db.Text
+  verifyToken        String    @db.Text
+  callbackVerifiedAt DateTime? @db.Timestamp(3)
+  lastEventAt        DateTime? @db.Timestamp(3)
+  deletedAt          DateTime? @db.Timestamp(3)
+  instances          Instance[]
+  events             MetaWebhookInbox[]
+
+  @@index([companyId])
+}
+
 model MetaWebhookInbox {
+  metaAppId   String?   @db.VarChar(36)
+  metaApp     MetaApp?  @relation(fields: [metaAppId], references: [id], onDelete: Restrict)
+  @@index([metaAppId])
   id          String    @id @db.VarChar(64)
   payload     Json      @db.JsonB
   attempts    Int       @default(0)
@@ -73,6 +93,9 @@ model MetaWebhookInbox {
 }
 
 model Instance {
+  metaAppId               String?                  @db.VarChar(36)
+  metaApp                 MetaApp?                 @relation(fields: [metaAppId], references: [id], onDelete: Restrict)
+  @@index([metaAppId])
   id                      String                   @id @default(cuid())
   name                    String                   @unique @db.VarChar(255)
   connectionStatus        InstanceConnectionStatus @default(open)
