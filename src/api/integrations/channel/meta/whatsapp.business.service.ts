@@ -118,7 +118,9 @@ export class BusinessStartupService extends ChannelStartupService {
       const unavailable = metaUnavailableStatus(e);
       if (unavailable === 504) throw new GatewayTimeoutException('A Meta não confirmou o envio.');
       if (unavailable === 503)
-        throw new ServiceUnavailableException('A Meta está indisponível no momento. Tente novamente em alguns minutos.');
+        throw new ServiceUnavailableException(
+          'A Meta está indisponível no momento. Tente novamente em alguns minutos.',
+        );
       throw new BadRequestException({ message: 'Meta rejected the message', code: e.response?.data?.error?.code });
     }
   }
