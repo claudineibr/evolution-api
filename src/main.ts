@@ -5,7 +5,7 @@ import '@utils/instrumentSentry';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
 import { HttpStatus, router } from '@api/routes/index.router';
-import { eventManager, waMonitor } from '@api/server.module';
+import { eventManager, metaController, waMonitor } from '@api/server.module';
 import {
   Auth,
   configService,
@@ -28,6 +28,7 @@ import { join } from 'path';
 
 async function initWA() {
   await waMonitor.loadInstance();
+  metaController.startWebhookWorker();
 }
 
 async function bootstrap() {
@@ -60,7 +61,12 @@ async function bootstrap() {
       credentials: configService.get<Cors>('CORS').CREDENTIALS,
     }),
     urlencoded({ extended: true, limit: '136mb' }),
-    json({ limit: '136mb' }),
+    json({
+      limit: '136mb',
+      verify: (req, _res, buffer) => {
+        if (/^\/webhook\/meta(?:\/[\w-]+)?$/.test(req.url?.split('?')[0] || '')) req['rawBody'] = Buffer.from(buffer);
+      },
+    }),
     compression(),
   );
 

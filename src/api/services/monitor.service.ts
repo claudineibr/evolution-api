@@ -302,6 +302,9 @@ export class WAMonitoringService {
       this.logger.info(
         `Skipping auto-connect for instance "${instanceData.instanceName}" (status: ${instanceData.connectionStatus || 'close'})`,
       );
+      if (instanceData.integration === Integration.WHATSAPP_BUSINESS && instanceData.connectionStatus === 'close') {
+        instance.stateConnection = { state: 'close' };
+      }
     }
 
     this.waInstances[instanceData.instanceName] = instance;

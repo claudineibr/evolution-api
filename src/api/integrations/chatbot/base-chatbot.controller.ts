@@ -60,6 +60,10 @@ export abstract class BaseChatbotController<BotType = any, BotData extends BaseC
   sessionRepository: any;
   userMessageDebounce: { [key: string]: { message: string; timeoutId: NodeJS.Timeout } } = {};
 
+  // Dedup cache: prevents processing the same message twice (LID + s.whatsapp.net dual JID)
+  private processedMessageIds: Map<string, number> = new Map();
+  private readonly DEDUP_TTL_MS = 30000; // 30 seconds
+
   // Name of the integration, to be set by the derived class
   protected abstract readonly integrationName: string;
 
@@ -787,6 +791,23 @@ export abstract class BaseChatbotController<BotType = any, BotData extends BaseC
   // Base implementation for emit
   public async emit({ instance, remoteJid, msg }: EmitData) {
     if (!this.integrationEnabled) return;
+
+    // Dedup: skip if same message ID was already processed (LID + s.whatsapp.net dual JID)
+    const msgKeyId = msg?.key?.id;
+    if (msgKeyId) {
+      const dedupKey = `${instance.instanceId}:${msgKeyId}`;
+      const now = Date.now();
+
+      // Clean old entries
+      for (const [key, timestamp] of this.processedMessageIds) {
+        if (now - timestamp > this.DEDUP_TTL_MS) this.processedMessageIds.delete(key);
+      }
+
+      if (this.processedMessageIds.has(dedupKey)) {
+        return;
+      }
+      this.processedMessageIds.set(dedupKey, now);
+    }
 
     try {
       const settings = await this.settingsRepository.findFirst({

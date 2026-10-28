@@ -393,7 +393,15 @@ export abstract class BaseChatbotService<BotType = any, SettingsType = any> {
     });
 
     // Forward the message to the chatbot
-    await this.sendMessageToBot(instance, session, settings, bot, remoteJid, pushName || '', content, msg);
+    try {
+      await this.sendMessageToBot(instance, session, settings, bot, remoteJid, pushName || '', content, msg);
+    } catch (error) {
+      this.logger.error(`Error in sendMessageToBot, resetting awaitUser: ${error?.message}`);
+      await this.prismaRepository.integrationSession.update({
+        where: { id: session.id },
+        data: { awaitUser: true },
+      });
+    }
   }
 
   /**

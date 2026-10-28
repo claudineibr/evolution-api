@@ -19,6 +19,7 @@ import { ChatRouter } from './chat.router';
 import { GroupRouter } from './group.router';
 import { InstanceRouter } from './instance.router';
 import { LabelRouter } from './label.router';
+import { officialRouter } from './official.router';
 import { ProxyRouter } from './proxy.router';
 import { MessageRouter } from './sendMessage.router';
 import { SettingsRouter } from './settings.router';
@@ -33,6 +34,8 @@ enum HttpStatus {
   BAD_REQUEST = 400,
   UNAUTHORIZED = 401,
   INTERNAL_SERVER_ERROR = 500,
+  SERVICE_UNAVAILABLE = 503,
+  GATEWAY_TIMEOUT = 504,
 }
 
 const router: Router = Router();
@@ -214,6 +217,7 @@ router
       facebookUserToken: facebookConfig.USER_TOKEN,
     });
   })
+  .use('/official', officialRouter)
   .use('/instance', new InstanceRouter(configService, ...guards).router)
   .use('/message', new MessageRouter(...guards).router)
   .use('/call', new CallRouter(...guards).router)

@@ -13,6 +13,7 @@ import {
   SendTemplateDto,
   SendTextDto,
 } from '@api/dto/sendMessage.dto';
+import { metaUnavailableStatus } from '@api/integrations/channel/meta/official-credentials';
 import * as s3Service from '@api/integrations/storage/s3/libs/minio.server';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
@@ -21,7 +22,12 @@ import { CacheService } from '@api/services/cache.service';
 import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, wa } from '@api/types/wa.types';
 import { AudioConverter, Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
-import { BadRequestException, InternalServerErrorException } from '@exceptions';
+import {
+  BadRequestException,
+  GatewayTimeoutException,
+  InternalServerErrorException,
+  ServiceUnavailableException,
+} from '@exceptions';
 import { createJid } from '@utils/createJid';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
@@ -48,6 +54,7 @@ export class BusinessStartupService extends ChannelStartupService {
   public stateConnection: wa.StateConnection = { state: 'open' };
 
   public phoneNumber: string;
+  private readonly inboundTimes = new Map<string, number>();
   public mobile: boolean;
 
   public get connectionStatus() {
@@ -76,15 +83,43 @@ export class BusinessStartupService extends ChannelStartupService {
   }
 
   private async post(message: any, params: string) {
+    if (params === 'messages') {
+      const instance = await this.prismaRepository.instance.findUnique({
+        where: { id: this.instanceId },
+        include: { metaApp: true },
+      });
+      if (!instance?.metaApp || instance.metaApp.deletedAt || instance.connectionStatus !== 'open') {
+        throw new BadRequestException('Vincule o aplicativo Meta e revalide as credenciais do número.');
+      }
+    }
+    if (params === 'messages' && message.type !== 'template') {
+      const remoteJid = createJid(String(message.to || ''));
+      const stored = await this.prismaRepository.message.findFirst({
+        where: {
+          instanceId: this.instanceId,
+          key: { path: ['remoteJid'], equals: remoteJid },
+          messageTimestamp: { gt: Math.floor(Date.now() / 1000) - 86400 },
+          AND: [{ key: { path: ['fromMe'], equals: false } }],
+        },
+        orderBy: { messageTimestamp: 'desc' },
+      });
+      const timestamp = Math.max(this.inboundTimes.get(remoteJid) || 0, Number(stored?.messageTimestamp || 0));
+      if (timestamp + 86400 <= Date.now() / 1000)
+        throw new BadRequestException('Use an approved template outside the service window');
+    }
     try {
       let urlServer = this.configService.get<WaBusiness>('WA_BUSINESS').URL;
       const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
       urlServer = `${urlServer}/${version}/${this.number}/${params}`;
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` };
-      const result = await axios.post(urlServer, message, { headers });
+      const result = await axios.post(urlServer, message, { headers, timeout: 15000 });
       return result.data;
     } catch (e) {
-      return e.response?.data?.error;
+      const unavailable = metaUnavailableStatus(e);
+      if (unavailable === 504) throw new GatewayTimeoutException('A Meta não confirmou o envio.');
+      if (unavailable === 503)
+        throw new ServiceUnavailableException('A Meta está indisponível no momento. Tente novamente em alguns minutos.');
+      throw new BadRequestException({ message: 'Meta rejected the message', code: e.response?.data?.error?.code });
     }
   }
 
@@ -127,15 +162,23 @@ export class BusinessStartupService extends ChannelStartupService {
     if (!data) return;
 
     const content = data.entry[0].changes[0].value;
+    const incoming = content.messages?.[0];
+    if (incoming?.from && incoming.timestamp) {
+      const timestamp = Number(incoming.timestamp);
+      if (timestamp <= Date.now() / 1000) {
+        this.inboundTimes.set(createJid(String(incoming.from)), timestamp);
+        if (this.inboundTimes.size > 10000) this.inboundTimes.delete(this.inboundTimes.keys().next().value);
+      }
+    }
 
     try {
       this.loadChatwoot();
 
-      this.eventHandler(content);
-
       this.phoneNumber = createJid(content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id);
+
+      await this.eventHandler(content);
     } catch (error) {
-      this.logger.error(error);
+      this.logger.error(`Official webhook processing failed: reason=${error?.message ?? error}`);
       throw new InternalServerErrorException(error?.toString());
     }
   }
@@ -149,12 +192,13 @@ export class BusinessStartupService extends ChannelStartupService {
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` };
 
       // Primeiro, obtenha a URL do arquivo
-      let result = await axios.get(urlServer, { headers });
+      let result = await axios.get(urlServer, { headers, timeout: 60000 });
 
       // Depois, baixe o arquivo usando a URL retornada
       result = await axios.get(result.data.url, {
         headers: { Authorization: `Bearer ${this.token}` }, // Use apenas o token de autorização para download
         responseType: 'arraybuffer',
+        timeout: 60000,
       });
 
       return result.data;
@@ -441,11 +485,12 @@ export class BusinessStartupService extends ChannelStartupService {
                 const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
                 urlServer = `${urlServer}/${version}/${id}`;
                 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` };
-                const result = await axios.get(urlServer, { headers });
+                const result = await axios.get(urlServer, { headers, timeout: 60000 });
 
                 const buffer = await axios.get(result.data.url, {
                   headers: { Authorization: `Bearer ${this.token}` }, // Use apenas o token de autorização para download
                   responseType: 'arraybuffer',
+                  timeout: 60000,
                 });
 
                 let mediaType;
@@ -664,18 +709,20 @@ export class BusinessStartupService extends ChannelStartupService {
           // await this.client.readMessages([received.key]);
         }
 
-        this.logger.log(messageRaw);
+        this.logger.info(`Official message normalized: id=${messageRaw.key.id}`);
 
         sendTelemetry(`received.message.${messageRaw.messageType ?? 'unknown'}`);
 
-        this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
+        await this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
 
-        await chatbotController.emit({
-          instance: { instanceName: this.instance.name, instanceId: this.instanceId },
-          remoteJid: messageRaw.key.remoteJid,
-          msg: messageRaw,
-          pushName: messageRaw.pushName,
-        });
+        if (!this.isMediaMessage(message)) {
+          await chatbotController.emit({
+            instance: { instanceName: this.instance.name, instanceId: this.instanceId },
+            remoteJid: messageRaw.key.remoteJid,
+            msg: messageRaw,
+            pushName: messageRaw.pushName,
+          });
+        }
 
         if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
           const chatwootSentMessage = await this.chatwootService.eventWhatsapp(
@@ -819,7 +866,8 @@ export class BusinessStartupService extends ChannelStartupService {
         }
       }
     } catch (error) {
-      this.logger.error(error);
+      this.logger.error(`Official message handling failed: reason=${error?.message ?? error}`);
+      throw error;
     }
   }
 
@@ -894,47 +942,36 @@ export class BusinessStartupService extends ChannelStartupService {
   }
 
   protected async eventHandler(content: any) {
-    try {
-      // Registro para depuración
-      this.logger.log('Contenido recibido en eventHandler:');
-      this.logger.log(JSON.stringify(content, null, 2));
+    this.logger.info('Official webhook received');
 
-      const database = this.configService.get<Database>('DATABASE');
-      const settings = await this.findSettings();
+    const database = this.configService.get<Database>('DATABASE');
+    const settings = await this.findSettings();
 
-      // Si hay mensajes, verificar primero el tipo
-      if (content.messages && content.messages.length > 0) {
-        const message = content.messages[0];
-        this.logger.log(`Tipo de mensaje recibido: ${message.type}`);
+    if (content.messages && content.messages.length > 0) {
+      const message = content.messages[0];
+      this.logger.log(`Tipo de mensaje recibido: ${message.type}`);
 
-        // Verificamos el tipo de mensaje antes de procesarlo
-        if (
-          message.type === 'text' ||
-          message.type === 'image' ||
-          message.type === 'video' ||
-          message.type === 'audio' ||
-          message.type === 'document' ||
-          message.type === 'sticker' ||
-          message.type === 'location' ||
-          message.type === 'contacts' ||
-          message.type === 'interactive' ||
-          message.type === 'button' ||
-          message.type === 'reaction'
-        ) {
-          // Procesar el mensaje normalmente
-          this.messageHandle(content, database, settings);
-        } else {
-          this.logger.warn(`Tipo de mensaje no reconocido: ${message.type}`);
-        }
-      } else if (content.statuses) {
-        // Procesar actualizaciones de estado
-        this.messageHandle(content, database, settings);
+      if (
+        message.type === 'text' ||
+        message.type === 'image' ||
+        message.type === 'video' ||
+        message.type === 'audio' ||
+        message.type === 'document' ||
+        message.type === 'sticker' ||
+        message.type === 'location' ||
+        message.type === 'contacts' ||
+        message.type === 'interactive' ||
+        message.type === 'button' ||
+        message.type === 'reaction'
+      ) {
+        await this.messageHandle(content, database, settings);
       } else {
-        this.logger.warn('No se encontraron mensajes ni estados en el contenido recibido');
+        this.logger.warn(`Tipo de mensaje no reconocido: ${message.type}`);
       }
-    } catch (error) {
-      this.logger.error('Error en eventHandler:');
-      this.logger.error(error);
+    } else if (content.statuses) {
+      await this.messageHandle(content, database, settings);
+    } else {
+      this.logger.warn('No se encontraron mensajes ni estados en el contenido recibido');
     }
   }
 
@@ -1127,10 +1164,7 @@ export class BusinessStartupService extends ChannelStartupService {
         }
       })();
 
-      if (messageSent?.error_data || messageSent.message) {
-        this.logger.error(messageSent);
-        return messageSent;
-      }
+      if (!messageSent?.messages?.[0]?.id) throw new BadRequestException('Meta did not confirm the message');
 
       const messageRaw: any = {
         key: { fromMe: true, id: messageSent?.messages[0]?.id, remoteJid: createJid(number) },
@@ -1156,12 +1190,14 @@ export class BusinessStartupService extends ChannelStartupService {
       }
 
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && isIntegration)
-        await chatbotController.emit({
-          instance: { instanceName: this.instance.name, instanceId: this.instanceId },
-          remoteJid: messageRaw.key.remoteJid,
-          msg: messageRaw,
-          pushName: messageRaw.pushName,
-        });
+        if (!this.isMediaMessage(message)) {
+          await chatbotController.emit({
+            instance: { instanceName: this.instance.name, instanceId: this.instanceId },
+            remoteJid: messageRaw.key.remoteJid,
+            msg: messageRaw,
+            pushName: messageRaw.pushName,
+          });
+        }
 
       await this.prismaRepository.message.create({
         data: messageRaw,
@@ -1169,6 +1205,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
       return messageRaw;
     } catch (error) {
+      if (error?.status && error?.error) throw error;
       this.logger.error(error);
       throw new BadRequestException(error.toString());
     }
