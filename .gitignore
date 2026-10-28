@@ -46,3 +46,8 @@ lerna-debug.log*
 .tool-versions
 
 /prisma/migrations/*
+
+!test/
+test/*
+!test/official-signature.test.ts
+!test/official-credentials.test.ts

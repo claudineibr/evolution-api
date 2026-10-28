@@ -60,6 +60,17 @@ enum DifyBotType {
   workflow
 }
 
+model MetaWebhookInbox {
+  id          String    @id @db.VarChar(64)
+  payload     Json
+  attempts    Int       @default(0)
+  availableAt DateTime  @default(now())
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([completedAt, availableAt])
+}
+
 model Instance {
   id                      String                   @id @default(cuid())
   name                    String                   @unique @db.VarChar(255)
