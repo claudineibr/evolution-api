@@ -236,7 +236,11 @@ export class BusinessStartupService extends ChannelStartupService {
 
   private messageInteractiveJson(received: any) {
     const message = received.messages[0];
-    let content: any = { conversation: message.interactive[message.interactive.type].title };
+    const reply = message.interactive[message.interactive.type];
+    let content: any = { conversation: reply.title };
+    if (message.interactive.type === 'button_reply' && reply.id) {
+      content.buttonsResponseMessage = { selectedButtonId: reply.id, selectedDisplayText: reply.title };
+    }
     message.context ? (content = { ...content, contextInfo: { stanzaId: message.context.id } }) : content;
     return content;
   }
@@ -244,6 +248,12 @@ export class BusinessStartupService extends ChannelStartupService {
   private messageButtonJson(received: any) {
     const message = received.messages[0];
     let content: any = { conversation: received.messages[0].button?.text };
+    if (message.button?.payload) {
+      content.templateButtonReplyMessage = {
+        selectedId: message.button.payload,
+        selectedDisplayText: message.button.text,
+      };
+    }
     message.context ? (content = { ...content, contextInfo: { stanzaId: message.context.id } }) : content;
     return content;
   }
