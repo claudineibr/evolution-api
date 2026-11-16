@@ -87,7 +87,9 @@ export class WebhookController extends EventController implements EventControlle
 
     const we = event.replace(/[.-]/gm, '_').toUpperCase();
     const transformedWe = we.replace(/_/gm, '-').toLowerCase();
-    const enabledLog = configService.get<Log>('LOG').LEVEL.includes('WEBHOOKS');
+    const requiresDelivery = Boolean(data && 'coexistence_event' in data);
+    let delivered = false;
+    const enabledLog = !requiresDelivery && configService.get<Log>('LOG').LEVEL.includes('WEBHOOKS');
     const regex = /^(https?:\/\/)/;
 
     const webhookData = {
@@ -131,6 +133,7 @@ export class WebhookController extends EventController implements EventControlle
             });
 
             await this.retryWebhookRequest(httpService, webhookData, `${origin}.sendData-Webhook`, baseURL, serverUrl);
+            delivered = true;
           }
         } catch (error) {
           this.logger.error({
@@ -145,6 +148,7 @@ export class WebhookController extends EventController implements EventControlle
             url: baseURL,
             server_url: serverUrl,
           });
+          if (requiresDelivery) throw error;
         }
       }
     }
@@ -181,6 +185,7 @@ export class WebhookController extends EventController implements EventControlle
               globalURL,
               serverUrl,
             );
+            delivered = true;
           }
         } catch (error) {
           this.logger.error({
@@ -195,9 +200,11 @@ export class WebhookController extends EventController implements EventControlle
             url: globalURL,
             server_url: serverUrl,
           });
+          if (requiresDelivery) throw error;
         }
       }
     }
+    if (requiresDelivery && !delivered) throw new Error('Coexistence webhook destination unavailable');
   }
 
   private async retryWebhookRequest(

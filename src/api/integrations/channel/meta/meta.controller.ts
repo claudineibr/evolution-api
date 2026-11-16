@@ -116,6 +116,24 @@ export class MetaController {
           }
           continue;
         }
+        if (change.field === 'account_update' && value.event === 'PARTNER_REMOVED') {
+          const accountId = String(value.waba_info?.waba_id || wabaId);
+          const disconnected = await this.prismaRepository.instance.findMany({
+            where: { metaAppId, businessId: accountId, integration: 'WHATSAPP-BUSINESS' },
+          });
+          for (const instance of disconnected) {
+            await this.prismaRepository.instance.update({
+              where: { id: instance.id },
+              data: { connectionStatus: 'close' },
+            });
+            const channel = this.waMonitor.waInstances[instance.name];
+            if (channel) {
+              channel.stateConnection = { state: 'close' };
+              await channel.sendDataWebhook(Events.CONNECTION_UPDATE, { state: 'close' });
+            }
+          }
+          continue;
+        }
         const numberId = value.metadata?.phone_number_id;
         if (!numberId) continue;
         const instances = await this.prismaRepository.instance.findMany({
@@ -137,6 +155,40 @@ export class MetaController {
         const [instance] = instances;
         const channel = this.waMonitor.waInstances[instance.name];
         if (!channel) throw new Error('Official instance not loaded');
+        if (['smb_message_echoes', 'history', 'smb_app_state_sync'].includes(change.field)) {
+          const send = async (part: any) =>
+            channel.sendDataWebhook(Events.MESSAGES_UPSERT, {
+              coexistence_event: { field: change.field, value: part, waba_id: wabaId },
+            });
+          if (change.field === 'history') {
+            for (const chunk of value.history || []) {
+              const messages = (chunk.threads || []).flatMap((thread: any) =>
+                (thread.messages || []).map((message: any) => ({ ...thread, messages: [message] })),
+              );
+              if (!messages.length) await send({ ...value, history: [chunk] });
+              for (let offset = 0; offset < messages.length; offset += BATCH_SIZE) {
+                const last = offset + BATCH_SIZE >= messages.length;
+                await send({
+                  ...value,
+                  history: [
+                    {
+                      ...chunk,
+                      metadata: { ...chunk.metadata, ...(!last ? { progress: undefined } : {}) },
+                      threads: messages.slice(offset, offset + BATCH_SIZE),
+                    },
+                  ],
+                });
+              }
+            }
+          } else if (change.field === 'smb_app_state_sync') {
+            for (let offset = 0; offset < (value.state_sync || []).length; offset += 100) {
+              await send({ ...value, state_sync: value.state_sync.slice(offset, offset + 100) });
+            }
+          } else {
+            await send(value);
+          }
+          continue;
+        }
         for (const message of value.messages || []) {
           const duplicate = await this.prismaRepository.message.findFirst({
             where: { instanceId: instance.id, key: { path: ['id'], equals: message.id } },

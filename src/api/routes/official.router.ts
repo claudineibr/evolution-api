@@ -74,6 +74,10 @@ const setState = async (
   channel.stateConnection = { state };
 };
 
+officialRouter.get('/capabilities', (_req, res) => {
+  res.json({ embedded_signup: true, coexistence: true });
+});
+
 officialRouter.put('/apps/:appId', async (req, res) => {
   try {
     res.json(await apps().sync(req.params.appId, req.body));
